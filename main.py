@@ -60,8 +60,23 @@ def get_tasks():
             })
     return tasks
 
-def mark_task_done(task_name, tasks):
-    for task in tasks:
+def get_all_tasks():
+    url = f"https://api.notion.com/v1/databases/{NOTION_DB_ID}/query"
+    response = requests.post(url, headers=NOTION_HEADERS, json={})
+    data = response.json()
+    tasks = []
+    for page in data.get("results", []):
+        props = page.get("properties", {})
+        name = ""
+        title_prop = props.get("Tarea") or props.get("Name") or props.get("Nombre")
+        if title_prop and title_prop.get("title"):
+            name = title_prop["title"][0]["plain_text"] if title_prop["title"] else ""
+        if name:
+            tasks.append({"id": page["id"], "name": name})
+    return tasks
+
+def mark_task_done(task_name, all_tasks):
+    for task in all_tasks:
         if task_name.lower() in task["name"].lower():
             url = f"https://api.notion.com/v1/pages/{task['id']}"
             requests.patch(url, headers=NOTION_HEADERS, json={
@@ -87,9 +102,8 @@ def ask_claude(prompt):
         }
     )
     data = response.json()
-    print(f"DEBUG Claude response: {data}")
     if "content" not in data:
-        return f"Error de Claude: {data.get('error', {}).get('message', str(data))}"
+        return f"Error: {data.get('error', {}).get('message', str(data))}"
     return data["content"][0]["text"]
 
 def analyze_tasks(tasks):
@@ -130,12 +144,12 @@ def webhook():
 
         elif any(word in text_lower for word in ["complete", "termine", "done", "hice", "ya hice"]):
             send_message(chat_id, "Buscando la tarea en Notion...")
-            tasks = get_tasks()
+            all_tasks = get_all_tasks()
             words_to_remove = ["complete", "termine", "done", "hice", "ya hice", "la tarea", "la"]
             task_name = text_lower
             for word in words_to_remove:
                 task_name = task_name.replace(word, "").strip()
-            completed = mark_task_done(task_name, tasks)
+            completed = mark_task_done(task_name, all_tasks)
             if completed:
                 send_message(chat_id, f"Marque '{completed}' como Done en Notion.")
             else:
