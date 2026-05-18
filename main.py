@@ -9,7 +9,7 @@ CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY")
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
 NOTION_DB_ID = os.environ.get("NOTION_DB_ID")
 ALLOWED_CHAT_ID = os.environ.get("ALLOWED_CHAT_ID")
-
+ 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 NOTION_HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
