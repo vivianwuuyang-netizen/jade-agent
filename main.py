@@ -26,15 +26,16 @@ def send_message(chat_id, text):
 
 def get_tasks():
     url = f"https://api.notion.com/v1/databases/{NOTION_DB_ID}/query"
-    response = requests.post(url, headers=NOTION_HEADERS, json={
-        "filter": {
-            "property": "Status",
-            "select": {
-                "does_not_equal": "Done"
-            }
-        }
-    })
+    response = requests.post(url, headers=NOTION_HEADERS, json={})
     data = response.json()
+
+    print(f"DEBUG - Status code: {response.status_code}")
+    print(f"DEBUG - Total results: {len(data.get('results', []))}")
+    if data.get('results'):
+        first = data['results'][0]
+        print(f"DEBUG - First page props: {list(first.get('properties', {}).keys())}")
+        print(f"DEBUG - Full first page: {first}")
+
     tasks = []
     for page in data.get("results", []):
         props = page.get("properties", {})
@@ -62,6 +63,8 @@ def get_tasks():
                 "priority": priority,
                 "due": due
             })
+
+    print(f"DEBUG - Tasks found: {tasks}")
     return tasks
 
 def mark_task_done(task_name, tasks):
