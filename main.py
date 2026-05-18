@@ -1,5 +1,4 @@
 import os
-import json
 import requests
 from flask import Flask, request
 
@@ -31,7 +30,7 @@ def get_tasks():
         "filter": {
             "property": "Status",
             "select": {
-                "does_not_equal": "Lista"
+                "does_not_equal": "Done"
             }
         }
     })
@@ -52,7 +51,7 @@ def get_tasks():
         if priority_prop and priority_prop.get("select"):
             priority = priority_prop["select"].get("name", "")
         due = ""
-        due_prop = props.get("Fecha límite") or props.get("Due")
+        due_prop = props.get("Fecha límite") or props.get("Fecha Límite") or props.get("Due")
         if due_prop and due_prop.get("date") and due_prop["date"]:
             due = due_prop["date"].get("start", "")
         if name:
@@ -71,8 +70,7 @@ def mark_task_done(task_name, tasks):
             url = f"https://api.notion.com/v1/pages/{task['id']}"
             requests.patch(url, headers=NOTION_HEADERS, json={
                 "properties": {
-                    "Status": {"select": {"name": "Lista"}},
-                    "Estado": {"select": {"name": "Lista"}}
+                    "Status": {"select": {"name": "Done"}}
                 }
             })
             return task["name"]
@@ -126,36 +124,27 @@ def webhook():
 
     text_lower = text.lower()
 
-    # Comandos de consulta
-    if any(word in text_lower for word in ["pendiente", "tarea", "hoy", "semana", "analiza", "jade", "qué tengo", "que tengo"]):
+    if any(word in text_lower for word in ["pendiente", "tarea", "hoy", "semana", "analiza", "jade", "que tengo", "qué tengo"]):
         send_message(chat_id, "🔍 Revisando tus tareas en Notion...")
         tasks = get_tasks()
         analysis = analyze_tasks(tasks)
         send_message(chat_id, analysis)
 
-    # Marcar tarea como completada
-    elif any(word in text_lower for word in ["completé", "complete", "terminé", "termine", "listo", "hice", "ya hice", "ya terminé"]):
+    elif any(word in text_lower for word in ["completé", "complete", "terminé", "termine", "done", "hice", "ya hice", "ya terminé"]):
         send_message(chat_id, "🔍 Buscando la tarea en Notion...")
         tasks = get_tasks()
-        # Extraer el nombre de la tarea del mensaje
-        words_to_remove = ["completé", "complete", "terminé", "termine", "listo", "hice", "ya hice", "ya terminé", "la tarea", "la"]
+        words_to_remove = ["completé", "complete", "terminé", "termine", "done", "hice", "ya hice", "ya terminé", "la tarea", "la"]
         task_name = text_lower
         for word in words_to_remove:
             task_name = task_name.replace(word, "").strip()
         completed = mark_task_done(task_name, tasks)
         if completed:
-            send_message(chat_id, f"✅ Marqué *{completed}* como completada en Notion.")
+            send_message(chat_id, f"✅ Marqué *{completed}* como Done en Notion.")
         else:
-            send_message(chat_id, f"No encontré una tarea con ese nombre. ¿Puedes escribir parte del nombre exacto?")
+            send_message(chat_id, "No encontré esa tarea. ¿Puedes escribir parte del nombre exacto?")
 
-    # Ayuda
     elif text_lower in ["/start", "/help", "ayuda", "hola"]:
-        send_message(chat_id, """👋 Hola, soy *Jade*, tu asistente de productividad.
-
-Puedes escribirme:
-• *¿Qué tengo pendiente?* → analizo tus tareas
-• *Completé [nombre de tarea]* → la marco como lista en Notion
-• *Hola* → te saludo 😊""")
+        send_message(chat_id, "👋 Hola, soy *Jade*, tu asistente de productividad.\n\nPuedes escribirme:\n• *¿Qué tengo pendiente?* → analizo tus tareas\n• *Completé [nombre de tarea]* → la marco como Done en Notion\n• *Hola* → te saludo 😊")
 
     else:
         send_message(chat_id, "No entendí bien. Escríbeme *¿qué tengo pendiente?* para ver tus tareas, o *completé [tarea]* para marcar una como lista.")
