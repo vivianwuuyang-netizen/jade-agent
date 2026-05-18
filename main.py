@@ -35,8 +35,6 @@ def get_tasks():
         title_prop = props.get("Tarea") or props.get("Name") or props.get("Nombre")
         if title_prop and title_prop.get("title"):
             name = title_prop["title"][0]["plain_text"] if title_prop["title"] else ""
-
-        # Status puede ser tipo "status" o "select"
         status = ""
         status_prop = props.get("Status") or props.get("Estado")
         if status_prop:
@@ -44,17 +42,14 @@ def get_tasks():
                 status = status_prop["status"].get("name", "")
             elif status_prop.get("select"):
                 status = status_prop["select"].get("name", "")
-
         priority = ""
         priority_prop = props.get("Prioridad")
         if priority_prop and priority_prop.get("select"):
             priority = priority_prop["select"].get("name", "")
-
         due = ""
         due_prop = props.get("Fecha límite") or props.get("Fecha Límite") or props.get("Due")
         if due_prop and due_prop.get("date") and due_prop["date"]:
             due = due_prop["date"].get("start", "")
-
         if name and status != "Done":
             tasks.append({
                 "id": page["id"],
@@ -92,6 +87,9 @@ def ask_claude(prompt):
         }
     )
     data = response.json()
+    print(f"DEBUG Claude response: {data}")
+    if "content" not in data:
+        return f"Error de Claude: {data.get('error', {}).get('message', str(data))}"
     return data["content"][0]["text"]
 
 def analyze_tasks(tasks):
