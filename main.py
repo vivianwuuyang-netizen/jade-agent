@@ -28,14 +28,6 @@ def get_tasks():
     url = f"https://api.notion.com/v1/databases/{NOTION_DB_ID}/query"
     response = requests.post(url, headers=NOTION_HEADERS, json={})
     data = response.json()
-
-    print(f"DEBUG - Status code: {response.status_code}")
-    print(f"DEBUG - Total results: {len(data.get('results', []))}")
-    if data.get('results'):
-        first = data['results'][0]
-        print(f"DEBUG - Props keys: {list(first.get('properties', {}).keys())}")
-        print(f"DEBUG - Full first page: {first}")
-
     tasks = []
     for page in data.get("results", []):
         props = page.get("properties", {})
@@ -43,19 +35,27 @@ def get_tasks():
         title_prop = props.get("Tarea") or props.get("Name") or props.get("Nombre")
         if title_prop and title_prop.get("title"):
             name = title_prop["title"][0]["plain_text"] if title_prop["title"] else ""
+
+        # Status puede ser tipo "status" o "select"
         status = ""
         status_prop = props.get("Status") or props.get("Estado")
-        if status_prop and status_prop.get("select"):
-            status = status_prop["select"].get("name", "")
+        if status_prop:
+            if status_prop.get("status"):
+                status = status_prop["status"].get("name", "")
+            elif status_prop.get("select"):
+                status = status_prop["select"].get("name", "")
+
         priority = ""
         priority_prop = props.get("Prioridad")
         if priority_prop and priority_prop.get("select"):
             priority = priority_prop["select"].get("name", "")
+
         due = ""
         due_prop = props.get("Fecha límite") or props.get("Fecha Límite") or props.get("Due")
         if due_prop and due_prop.get("date") and due_prop["date"]:
             due = due_prop["date"].get("start", "")
-        if name:
+
+        if name and status != "Done":
             tasks.append({
                 "id": page["id"],
                 "name": name,
@@ -63,8 +63,6 @@ def get_tasks():
                 "priority": priority,
                 "due": due
             })
-
-    print(f"DEBUG - Tasks found: {tasks}")
     return tasks
 
 def mark_task_done(task_name, tasks):
@@ -73,7 +71,7 @@ def mark_task_done(task_name, tasks):
             url = f"https://api.notion.com/v1/pages/{task['id']}"
             requests.patch(url, headers=NOTION_HEADERS, json={
                 "properties": {
-                    "Status": {"select": {"name": "Done"}}
+                    "Status": {"status": {"name": "Done"}}
                 }
             })
             return task["name"]
@@ -103,7 +101,7 @@ def analyze_tasks(tasks):
         f"- {t['name']} | Estado: {t['status']} | Prioridad: {t['priority']} | Fecha limite: {t['due'] or 'sin fecha'}"
         for t in tasks
     ])
-    prompt = f"""Eres Jade, asistente personal de productividad. Analiza estas tareas pendientes y responde en español de forma concisa y util:
+    prompt = f"""Eres Jade, asistente personal de productividad. Analiza estas tareas pendientes y responde en español de forma concisa:
 
 {task_list}
 
@@ -115,44 +113,44 @@ Responde con:
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.json
-    print(f"DEBUG - Webhook recibido: {data}")
-    message = data.get("message", {})
-    chat_id = str(message.get("chat", {}).get("id", ""))
-    text = message.get("text", "").strip()
-    print(f"DEBUG - chat_id: {chat_id}, ALLOWED: {ALLOWED_CHAT_ID}, text: {text}")
+    try:
+        data = request.json
+        message = data.get("message", {})
+        chat_id = str(message.get("chat", {}).get("id", ""))
+        text = message.get("text", "").strip()
 
-    if chat_id != ALLOWED_CHAT_ID:
-        print(f"DEBUG - Chat ID no coincide, ignorando")
-        send_message(chat_id, f"Tu chat id es: {chat_id}")
-        return "ok"
+        if chat_id != ALLOWED_CHAT_ID:
+            return "ok"
 
-    text_lower = text.lower()
+        text_lower = text.lower()
 
-    if any(word in text_lower for word in ["pendiente", "tarea", "hoy", "semana", "analiza", "jade", "que tengo", "que tengo"]):
-        send_message(chat_id, "Revisando tus tareas en Notion...")
-        tasks = get_tasks()
-        analysis = analyze_tasks(tasks)
-        send_message(chat_id, analysis)
+        if any(word in text_lower for word in ["pendiente", "tarea", "hoy", "semana", "analiza", "jade", "que tengo"]):
+            send_message(chat_id, "Revisando tus tareas en Notion...")
+            tasks = get_tasks()
+            analysis = analyze_tasks(tasks)
+            send_message(chat_id, analysis)
 
-    elif any(word in text_lower for word in ["complete", "termine", "done", "hice", "ya hice"]):
-        send_message(chat_id, "Buscando la tarea en Notion...")
-        tasks = get_tasks()
-        words_to_remove = ["complete", "termine", "done", "hice", "ya hice", "la tarea", "la"]
-        task_name = text_lower
-        for word in words_to_remove:
-            task_name = task_name.replace(word, "").strip()
-        completed = mark_task_done(task_name, tasks)
-        if completed:
-            send_message(chat_id, f"Marque {completed} como Done en Notion.")
+        elif any(word in text_lower for word in ["complete", "termine", "done", "hice", "ya hice"]):
+            send_message(chat_id, "Buscando la tarea en Notion...")
+            tasks = get_tasks()
+            words_to_remove = ["complete", "termine", "done", "hice", "ya hice", "la tarea", "la"]
+            task_name = text_lower
+            for word in words_to_remove:
+                task_name = task_name.replace(word, "").strip()
+            completed = mark_task_done(task_name, tasks)
+            if completed:
+                send_message(chat_id, f"Marque '{completed}' como Done en Notion.")
+            else:
+                send_message(chat_id, "No encontre esa tarea. Escribe parte del nombre exacto.")
+
+        elif text_lower in ["/start", "/help", "ayuda", "hola"]:
+            send_message(chat_id, "Hola, soy Jade!\n\nEscribeme:\n- que tengo pendiente\n- complete [nombre de tarea]")
+
         else:
-            send_message(chat_id, "No encontre esa tarea. Escribe parte del nombre exacto.")
+            send_message(chat_id, "Escribeme 'que tengo pendiente' para ver tus tareas.")
 
-    elif text_lower in ["/start", "/help", "ayuda", "hola"]:
-        send_message(chat_id, "Hola, soy Jade, tu asistente de productividad.\n\nEscribeme:\n- Que tengo pendiente? para ver tus tareas\n- Complete [nombre] para marcar como Done en Notion")
-
-    else:
-        send_message(chat_id, "Escribeme 'que tengo pendiente' para ver tus tareas.")
+    except Exception as e:
+        print(f"ERROR: {e}")
 
     return "ok"
 
