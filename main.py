@@ -1,4 +1,5 @@
 import os
+import json
 import requests
 from flask import Flask, request
 
@@ -16,6 +17,9 @@ NOTION_HEADERS = {
     "Notion-Version": "2022-06-28",
     "Content-Type": "application/json"
 }
+
+# Memoria de conversacion en memoria (se resetea al reiniciar)
+conversation_history = []
 
 def send_message(chat_id, text):
     requests.post(f"{TELEGRAM_API}/sendMessage", json={
@@ -75,7 +79,8 @@ def get_all_tasks():
             tasks.append({"id": page["id"], "name": name})
     return tasks
 
-def mark_task_done(task_name, all_tasks):
+def mark_task_done(task_name):
+    all_tasks = get_all_tasks()
     for task in all_tasks:
         if task_name.lower() in task["name"].lower():
             url = f"https://api.notion.com/v1/pages/{task['id']}"
@@ -102,38 +107,32 @@ def create_task(name, priority="Media", due=None):
     })
     return response.status_code == 200
 
-def parse_new_task(text, claude_key):
-    prompt = f"""Extrae la información de esta tarea y devuelve SOLO un JSON sin backticks:
-"{text}"
+def ask_claude_conversational(user_message, tasks):
+    global conversation_history
 
-Formato exacto:
-{{"name": "nombre de la tarea", "priority": "Alta|Media|Baja", "due": "YYYY-MM-DD o null"}}
+    task_list = "\n".join([
+        f"- {t['name']} | Estado: {t['status']} | Prioridad: {t['priority']} | Vence: {t['due'] or 'sin fecha'}"
+        for t in tasks
+    ]) if tasks else "No hay tareas pendientes."
 
-Si no se menciona prioridad usa "Media". Si no se menciona fecha usa null."""
-    response = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={
-            "x-api-key": claude_key,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json"
-        },
-        json={
-            "model": "claude-sonnet-4-5-20250929",
-            "max_tokens": 200,
-            "messages": [{"role": "user", "content": prompt}]
-        }
-    )
-    data = response.json()
-    if "content" not in data:
-        return None
-    import json
-    try:
-        text_response = data["content"][0]["text"].strip()
-        return json.loads(text_response)
-    except:
-        return None
+    system = f"""Eres Jade, asistente personal de productividad de Vivian. Eres conversacional, util y concisa.
 
-def ask_claude(prompt):
+Tienes acceso a las tareas actuales de Notion:
+{task_list}
+
+Puedes hacer estas acciones respondiendo con JSON al final de tu mensaje cuando sea necesario:
+- Crear tarea: [ACCION: {{"tipo": "crear", "nombre": "...", "prioridad": "Alta|Media|Baja", "fecha": "YYYY-MM-DD o null"}}]
+- Marcar como done: [ACCION: {{"tipo": "done", "nombre": "parte del nombre"}}]
+
+Si no necesitas hacer ninguna accion, no incluyas el bloque ACCION.
+Responde siempre en español. Se breve y directa."""
+
+    conversation_history.append({"role": "user", "content": user_message})
+
+    # Mantener solo los ultimos 10 mensajes
+    if len(conversation_history) > 10:
+        conversation_history = conversation_history[-10:]
+
     response = requests.post(
         "https://api.anthropic.com/v1/messages",
         headers={
@@ -144,30 +143,31 @@ def ask_claude(prompt):
         json={
             "model": "claude-sonnet-4-5-20250929",
             "max_tokens": 1000,
-            "messages": [{"role": "user", "content": prompt}]
+            "system": system,
+            "messages": conversation_history
         }
     )
     data = response.json()
     if "content" not in data:
-        return f"Error: {data.get('error', {}).get('message', str(data))}"
-    return data["content"][0]["text"]
+        return "Hubo un error. Intenta de nuevo.", None
 
-def analyze_tasks(tasks):
-    if not tasks:
-        return "No tienes tareas pendientes. Todo al dia!"
-    task_list = "\n".join([
-        f"- {t['name']} | Estado: {t['status']} | Prioridad: {t['priority']} | Fecha limite: {t['due'] or 'sin fecha'}"
-        for t in tasks
-    ])
-    prompt = f"""Eres Jade, asistente personal de productividad. Analiza estas tareas pendientes y responde en español de forma concisa:
+    full_response = data["content"][0]["text"]
+    conversation_history.append({"role": "assistant", "content": full_response})
 
-{task_list}
+    # Extraer accion si existe
+    action = None
+    if "[ACCION:" in full_response:
+        try:
+            action_str = full_response.split("[ACCION:")[1].split("]")[0].strip()
+            action = json.loads(action_str)
+            # Limpiar el texto de la respuesta
+            clean_response = full_response.split("[ACCION:")[0].strip()
+        except:
+            clean_response = full_response
+    else:
+        clean_response = full_response
 
-Responde con:
-1. Urgente: tareas vencidas o criticas
-2. Top 3 para hoy: las mas importantes
-3. Recomendacion: un consejo breve para avanzar"""
-    return ask_claude(prompt)
+    return clean_response, action
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -180,52 +180,38 @@ def webhook():
         if chat_id != ALLOWED_CHAT_ID:
             return "ok"
 
-        text_lower = text.lower()
+        if text in ["/start", "/help"]:
+            send_message(chat_id, "Hola, soy *Jade*!\n\nPuedo ayudarte con tus tareas de Notion. Habla conmigo naturalmente, por ejemplo:\n- _que tengo pendiente hoy?_\n- _agrega una tarea para llamar al proveedor_\n- _ya termine la tarea del pipeline_\n- _que deberia priorizar esta semana?_")
+            return "ok"
 
-        if any(word in text_lower for word in ["pendiente", "tarea", "hoy", "semana", "analiza", "jade", "que tengo"]):
-            send_message(chat_id, "Revisando tus tareas en Notion...")
-            tasks = get_tasks()
-            analysis = analyze_tasks(tasks)
-            send_message(chat_id, analysis)
+        tasks = get_tasks()
+        response_text, action = ask_claude_conversational(text, tasks)
 
-        elif any(word in text_lower for word in ["nueva tarea", "agregar tarea", "crear tarea", "nueva:", "tarea:"]):
-            send_message(chat_id, "Creando tarea en Notion...")
-            task_info = parse_new_task(text, CLAUDE_API_KEY)
-            if task_info:
+        # Ejecutar accion si Claude la indico
+        if action:
+            if action.get("tipo") == "crear":
                 success = create_task(
-                    name=task_info.get("name", text),
-                    priority=task_info.get("priority", "Media"),
-                    due=task_info.get("due")
+                    name=action.get("nombre", ""),
+                    priority=action.get("prioridad", "Media"),
+                    due=action.get("fecha")
                 )
                 if success:
-                    due_text = f", fecha: {task_info.get('due')}" if task_info.get("due") else ""
-                    send_message(chat_id, f"Tarea creada en Notion:\n*{task_info.get('name')}*\nPrioridad: {task_info.get('priority')}{due_text}")
+                    response_text += f"\n\n✅ Cree la tarea *{action.get('nombre')}* en Notion."
                 else:
-                    send_message(chat_id, "No pude crear la tarea. Intenta de nuevo.")
-            else:
-                send_message(chat_id, "No entendi bien la tarea. Ejemplo: 'nueva tarea: reunión con cliente, prioridad alta, 2026-05-20'")
+                    response_text += "\n\n❌ No pude crear la tarea en Notion."
 
-        elif any(word in text_lower for word in ["complete", "termine", "done", "hice", "ya hice"]):
-            send_message(chat_id, "Buscando la tarea en Notion...")
-            all_tasks = get_all_tasks()
-            words_to_remove = ["complete", "termine", "done", "hice", "ya hice", "la tarea", "la"]
-            task_name = text_lower
-            for word in words_to_remove:
-                task_name = task_name.replace(word, "").strip()
-            completed = mark_task_done(task_name, all_tasks)
-            if completed:
-                send_message(chat_id, f"Marque '{completed}' como Done en Notion.")
-            else:
-                send_message(chat_id, "No encontre esa tarea. Escribe parte del nombre exacto.")
+            elif action.get("tipo") == "done":
+                completed = mark_task_done(action.get("nombre", ""))
+                if completed:
+                    response_text += f"\n\n✅ Marque *{completed}* como Done en Notion."
+                else:
+                    response_text += f"\n\n❌ No encontre la tarea '{action.get('nombre')}' en Notion."
 
-        elif text_lower in ["/start", "/help", "ayuda", "hola"]:
-            send_message(chat_id, "Hola, soy *Jade*!\n\nEscribeme:\n- *que tengo pendiente* → analizo tus tareas\n- *nueva tarea: [descripcion]* → creo la tarea en Notion\n- *complete [nombre]* → marco como Done en Notion")
-
-        else:
-            send_message(chat_id, "Escribeme *que tengo pendiente*, *nueva tarea: [descripcion]*, o *complete [nombre]*.")
+        send_message(chat_id, response_text)
 
     except Exception as e:
         print(f"ERROR: {e}")
+        send_message(chat_id, "Hubo un error. Intenta de nuevo.")
 
     return "ok"
 
