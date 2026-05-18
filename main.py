@@ -87,6 +87,52 @@ def mark_task_done(task_name, all_tasks):
             return task["name"]
     return None
 
+def create_task(name, priority="Media", due=None):
+    url = "https://api.notion.com/v1/pages"
+    properties = {
+        "Tarea": {"title": [{"text": {"content": name}}]},
+        "Prioridad": {"select": {"name": priority}},
+        "Status": {"status": {"name": "Not started"}}
+    }
+    if due:
+        properties["Fecha límite"] = {"date": {"start": due}}
+    response = requests.post(url, headers=NOTION_HEADERS, json={
+        "parent": {"database_id": NOTION_DB_ID},
+        "properties": properties
+    })
+    return response.status_code == 200
+
+def parse_new_task(text, claude_key):
+    prompt = f"""Extrae la información de esta tarea y devuelve SOLO un JSON sin backticks:
+"{text}"
+
+Formato exacto:
+{{"name": "nombre de la tarea", "priority": "Alta|Media|Baja", "due": "YYYY-MM-DD o null"}}
+
+Si no se menciona prioridad usa "Media". Si no se menciona fecha usa null."""
+    response = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": claude_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json"
+        },
+        json={
+            "model": "claude-sonnet-4-5-20250929",
+            "max_tokens": 200,
+            "messages": [{"role": "user", "content": prompt}]
+        }
+    )
+    data = response.json()
+    if "content" not in data:
+        return None
+    import json
+    try:
+        text_response = data["content"][0]["text"].strip()
+        return json.loads(text_response)
+    except:
+        return None
+
 def ask_claude(prompt):
     response = requests.post(
         "https://api.anthropic.com/v1/messages",
@@ -142,6 +188,23 @@ def webhook():
             analysis = analyze_tasks(tasks)
             send_message(chat_id, analysis)
 
+        elif any(word in text_lower for word in ["nueva tarea", "agregar tarea", "crear tarea", "nueva:", "tarea:"]):
+            send_message(chat_id, "Creando tarea en Notion...")
+            task_info = parse_new_task(text, CLAUDE_API_KEY)
+            if task_info:
+                success = create_task(
+                    name=task_info.get("name", text),
+                    priority=task_info.get("priority", "Media"),
+                    due=task_info.get("due")
+                )
+                if success:
+                    due_text = f", fecha: {task_info.get('due')}" if task_info.get("due") else ""
+                    send_message(chat_id, f"Tarea creada en Notion:\n*{task_info.get('name')}*\nPrioridad: {task_info.get('priority')}{due_text}")
+                else:
+                    send_message(chat_id, "No pude crear la tarea. Intenta de nuevo.")
+            else:
+                send_message(chat_id, "No entendi bien la tarea. Ejemplo: 'nueva tarea: reunión con cliente, prioridad alta, 2026-05-20'")
+
         elif any(word in text_lower for word in ["complete", "termine", "done", "hice", "ya hice"]):
             send_message(chat_id, "Buscando la tarea en Notion...")
             all_tasks = get_all_tasks()
@@ -156,10 +219,10 @@ def webhook():
                 send_message(chat_id, "No encontre esa tarea. Escribe parte del nombre exacto.")
 
         elif text_lower in ["/start", "/help", "ayuda", "hola"]:
-            send_message(chat_id, "Hola, soy Jade!\n\nEscribeme:\n- que tengo pendiente\n- complete [nombre de tarea]")
+            send_message(chat_id, "Hola, soy *Jade*!\n\nEscribeme:\n- *que tengo pendiente* → analizo tus tareas\n- *nueva tarea: [descripcion]* → creo la tarea en Notion\n- *complete [nombre]* → marco como Done en Notion")
 
         else:
-            send_message(chat_id, "Escribeme 'que tengo pendiente' para ver tus tareas.")
+            send_message(chat_id, "Escribeme *que tengo pendiente*, *nueva tarea: [descripcion]*, o *complete [nombre]*.")
 
     except Exception as e:
         print(f"ERROR: {e}")
