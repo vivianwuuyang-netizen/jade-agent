@@ -9,7 +9,7 @@ CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY")
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
 NOTION_DB_ID = os.environ.get("NOTION_DB_ID")
 ALLOWED_CHAT_ID = os.environ.get("ALLOWED_CHAT_ID")
- 
+
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 NOTION_HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -33,7 +33,7 @@ def get_tasks():
     print(f"DEBUG - Total results: {len(data.get('results', []))}")
     if data.get('results'):
         first = data['results'][0]
-        print(f"DEBUG - First page props: {list(first.get('properties', {}).keys())}")
+        print(f"DEBUG - Props keys: {list(first.get('properties', {}).keys())}")
         print(f"DEBUG - Full first page: {first}")
 
     tasks = []
@@ -98,65 +98,67 @@ def ask_claude(prompt):
 
 def analyze_tasks(tasks):
     if not tasks:
-        return "No tienes tareas pendientes. ¡Todo al día! ✅"
+        return "No tienes tareas pendientes. Todo al dia!"
     task_list = "\n".join([
-        f"- {t['name']} | Estado: {t['status']} | Prioridad: {t['priority']} | Fecha límite: {t['due'] or 'sin fecha'}"
+        f"- {t['name']} | Estado: {t['status']} | Prioridad: {t['priority']} | Fecha limite: {t['due'] or 'sin fecha'}"
         for t in tasks
     ])
-    prompt = f"""Eres Jade, asistente personal de productividad. Analiza estas tareas pendientes y responde en español de forma concisa y útil:
+    prompt = f"""Eres Jade, asistente personal de productividad. Analiza estas tareas pendientes y responde en español de forma concisa y util:
 
 {task_list}
 
 Responde con:
-1. 🚨 *Urgente* — tareas vencidas o críticas
-2. 🎯 *Top 3 para hoy* — las más importantes
-3. 💡 *Recomendación* — un consejo breve para avanzar
-
-Usa emojis y formato Telegram (con *negrita*)."""
+1. Urgente: tareas vencidas o criticas
+2. Top 3 para hoy: las mas importantes
+3. Recomendacion: un consejo breve para avanzar"""
     return ask_claude(prompt)
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
+    print(f"DEBUG - Webhook recibido: {data}")
     message = data.get("message", {})
     chat_id = str(message.get("chat", {}).get("id", ""))
     text = message.get("text", "").strip()
+    print(f"DEBUG - chat_id: {chat_id}, ALLOWED: {ALLOWED_CHAT_ID}, text: {text}")
 
     if chat_id != ALLOWED_CHAT_ID:
+        print(f"DEBUG - Chat ID no coincide, ignorando")
+        send_message(chat_id, f"Tu chat id es: {chat_id}")
         return "ok"
 
     text_lower = text.lower()
 
-    if any(word in text_lower for word in ["pendiente", "tarea", "hoy", "semana", "analiza", "jade", "que tengo", "qué tengo"]):
-        send_message(chat_id, "🔍 Revisando tus tareas en Notion...")
+    if any(word in text_lower for word in ["pendiente", "tarea", "hoy", "semana", "analiza", "jade", "que tengo", "que tengo"]):
+        send_message(chat_id, "Revisando tus tareas en Notion...")
         tasks = get_tasks()
         analysis = analyze_tasks(tasks)
         send_message(chat_id, analysis)
 
-    elif any(word in text_lower for word in ["completé", "complete", "terminé", "termine", "done", "hice", "ya hice", "ya terminé"]):
-        send_message(chat_id, "🔍 Buscando la tarea en Notion...")
+    elif any(word in text_lower for word in ["complete", "termine", "done", "hice", "ya hice"]):
+        send_message(chat_id, "Buscando la tarea en Notion...")
         tasks = get_tasks()
-        words_to_remove = ["completé", "complete", "terminé", "termine", "done", "hice", "ya hice", "ya terminé", "la tarea", "la"]
+        words_to_remove = ["complete", "termine", "done", "hice", "ya hice", "la tarea", "la"]
         task_name = text_lower
         for word in words_to_remove:
             task_name = task_name.replace(word, "").strip()
         completed = mark_task_done(task_name, tasks)
         if completed:
-            send_message(chat_id, f"✅ Marqué *{completed}* como Done en Notion.")
+            send_message(chat_id, f"Marque {completed} como Done en Notion.")
         else:
-            send_message(chat_id, "No encontré esa tarea. ¿Puedes escribir parte del nombre exacto?")
+            send_message(chat_id, "No encontre esa tarea. Escribe parte del nombre exacto.")
 
     elif text_lower in ["/start", "/help", "ayuda", "hola"]:
-        send_message(chat_id, "👋 Hola, soy *Jade*, tu asistente de productividad.\n\nPuedes escribirme:\n• *¿Qué tengo pendiente?* → analizo tus tareas\n• *Completé [nombre de tarea]* → la marco como Done en Notion\n• *Hola* → te saludo 😊")
+        send_message(chat_id, "Hola, soy Jade, tu asistente de productividad.\n\nEscribeme:\n- Que tengo pendiente? para ver tus tareas\n- Complete [nombre] para marcar como Done en Notion")
 
     else:
-        send_message(chat_id, "No entendí bien. Escríbeme *¿qué tengo pendiente?* para ver tus tareas, o *completé [tarea]* para marcar una como lista.")
+        send_message(chat_id, "Escribeme 'que tengo pendiente' para ver tus tareas.")
 
     return "ok"
 
 @app.route("/")
 def home():
-    return "Jade está activa ✅"
+    return "Jade esta activa"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
