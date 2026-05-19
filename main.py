@@ -12,6 +12,7 @@ NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
 NOTION_DB_ID = os.environ.get("NOTION_DB_ID")
 ALLOWED_CHAT_ID = os.environ.get("ALLOWED_CHAT_ID")
 NOTION_MEMORY_ID = os.environ.get("NOTION_MEMORY_ID")
+NOTION_KPIS_ID = os.environ.get("NOTION_KPIS_ID")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 NOTION_HEADERS = {
@@ -64,6 +65,38 @@ def save_memory(history):
         })
     except Exception as e:
         print(f"Error guardando memoria: {e}")
+
+def get_kpis():
+    """Lee los KPIs desde la pagina de Notion"""
+    if not NOTION_KPIS_ID:
+        return ""
+    try:
+        url = f"https://api.notion.com/v1/blocks/{NOTION_KPIS_ID}/children"
+        response = requests.get(url, headers=NOTION_HEADERS)
+        data = response.json()
+        kpi_text = []
+        for block in data.get("results", []):
+            block_type = block.get("type")
+            if block_type == "table":
+                table_id = block["id"]
+                rows_url = f"https://api.notion.com/v1/blocks/{table_id}/children"
+                rows_response = requests.get(rows_url, headers=NOTION_HEADERS)
+                rows = rows_response.json().get("results", [])
+                for row in rows:
+                    cells = row.get("table_row", {}).get("cells", [])
+                    row_text = " | ".join([
+                        cell[0]["plain_text"] if cell else ""
+                        for cell in cells
+                    ])
+                    kpi_text.append(row_text)
+            elif block_type in ["paragraph", "heading_1", "heading_2", "heading_3"]:
+                rich_text = block.get(block_type, {}).get("rich_text", [])
+                if rich_text:
+                    kpi_text.append(rich_text[0].get("plain_text", ""))
+        return "\n".join(kpi_text) if kpi_text else "No se pudieron cargar los KPIs."
+    except Exception as e:
+        print(f"Error leyendo KPIs: {e}")
+        return "No se pudieron cargar los KPIs."
 
 def get_tasks():
     url = f"https://api.notion.com/v1/databases/{NOTION_DB_ID}/query"
@@ -143,30 +176,27 @@ def create_task(name, priority="Media", due=None):
     return response.status_code == 200
 
 def add_note_to_task(task_name, note):
-    """Agrega una nota con fecha al cuerpo de la tarea en Notion"""
     all_tasks = get_all_tasks()
     for task in all_tasks:
         if task_name.lower() in task["name"].lower():
             today = datetime.now().strftime("%Y-%m-%d %H:%M")
             url = f"https://api.notion.com/v1/blocks/{task['id']}/children"
             response = requests.patch(url, headers=NOTION_HEADERS, json={
-                "children": [
-                    {
-                        "object": "block",
-                        "type": "callout",
-                        "callout": {
-                            "rich_text": [{"type": "text", "text": {"content": f"📝 {today}\n{note}"}}],
-                            "icon": {"emoji": "📌"},
-                            "color": "gray_background"
-                        }
+                "children": [{
+                    "object": "block",
+                    "type": "callout",
+                    "callout": {
+                        "rich_text": [{"type": "text", "text": {"content": f"📝 {today}\n{note}"}}],
+                        "icon": {"emoji": "📌"},
+                        "color": "gray_background"
                     }
-                ]
+                }]
             })
             if response.status_code == 200:
                 return task["name"]
     return None
 
-def ask_jade(user_message, tasks):
+def ask_jade(user_message, tasks, kpis):
     history = load_memory()
 
     task_list = "\n".join([
@@ -175,19 +205,26 @@ def ask_jade(user_message, tasks):
     ]) if tasks else "No hay tareas pendientes."
 
     today = datetime.now().strftime("%Y-%m-%d")
+    current_month = datetime.now().strftime("%B")
 
     system = f"""Eres Jade, asistente personal de productividad de Vivian.
 Vivian es Territory Product Manager de NUC, Chromebox y Mini PC para Sudamerica en Intel.
 Su region incluye: Colombia, Ecuador, Centroamerica, Chile, Peru y Argentina.
-Sus KPIs son revenue y unidades vendidas por trimestre (categorias: barebone y sistemas).
-Hoy es {today}.
+Sus KPIs se miden en revenue y unidades por trimestre en 3 categorias: MR/AR (Mini PC + NUC Barebone), MS/AS (Mini PC + NUC System) y GX10.
+Hoy es {today}. Mes actual: {current_month}.
+
+KPIs 2026 (metas anuales y avance mensual):
+{kpis}
 
 Tareas actuales en Notion:
 {task_list}
 
+Cuando Vivian te pregunte sobre prioridades, conecta sus tareas con sus KPIs. 
+Por ejemplo: si hay una orden grande de MR/AR pendiente y estamos cerca del cierre del trimestre, esa orden es critica para el KPI.
+
 Eres conversacional, inteligente y concisa. Recuerdas conversaciones anteriores.
 
-Puedes ejecutar estas acciones incluyendolas AL FINAL de tu respuesta:
+Puedes ejecutar acciones incluyendolas AL FINAL de tu respuesta:
 [ACCION: {{"tipo": "crear", "nombre": "...", "prioridad": "Alta|Media|Baja", "fecha": "YYYY-MM-DD o null"}}]
 [ACCION: {{"tipo": "done", "nombre": "parte del nombre de la tarea"}}]
 [ACCION: {{"tipo": "nota", "tarea": "parte del nombre", "nota": "texto de la nota"}}]
@@ -243,11 +280,12 @@ def webhook():
             return "ok"
 
         if text in ["/start", "/help"]:
-            send_message(chat_id, "Hola, soy *Jade*!\n\nHabla conmigo naturalmente:\n- _que tengo pendiente?_\n- _agrega tarea: llamar a proveedor el viernes_\n- _ya termine el pipeline_\n- _agrega nota al pipeline: bloqueado por presupuesto de Argentina_\n- _que deberia priorizar esta semana?_")
+            send_message(chat_id, "Hola, soy *Jade*!\n\nHabla conmigo naturalmente:\n- _que tengo pendiente?_\n- _agrega tarea: llamar a proveedor el viernes_\n- _ya termine el pipeline_\n- _agrega nota al pipeline: bloqueado por presupuesto_\n- _como voy con mis KPIs este trimestre?_")
             return "ok"
 
         tasks = get_tasks()
-        response_text, action = ask_jade(text, tasks)
+        kpis = get_kpis()
+        response_text, action = ask_jade(text, tasks, kpis)
 
         if action:
             if action.get("tipo") == "crear":
@@ -271,7 +309,7 @@ def webhook():
             elif action.get("tipo") == "nota":
                 saved = add_note_to_task(action.get("tarea", ""), action.get("nota", ""))
                 if saved:
-                    response_text += f"\n\n📝 Note agregada a *{saved}* en Notion."
+                    response_text += f"\n\n📝 Nota agregada a *{saved}* en Notion."
                 else:
                     response_text += f"\n\n❌ No encontre la tarea para agregar la nota."
 
