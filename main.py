@@ -28,47 +28,36 @@ def send_message(chat_id, text):
     })
 
 def load_memory():
-    """Lee el historial de conversacion desde Notion"""
     if not NOTION_MEMORY_ID:
         return []
     try:
         url = f"https://api.notion.com/v1/blocks/{NOTION_MEMORY_ID}/children"
         response = requests.get(url, headers=NOTION_HEADERS)
         data = response.json()
-        blocks = data.get("results", [])
-        for block in blocks:
+        for block in data.get("results", []):
             if block.get("type") == "code":
                 content = block["code"]["rich_text"]
                 if content:
-                    text = content[0]["plain_text"]
-                    return json.loads(text)
+                    return json.loads(content[0]["plain_text"])
         return []
     except:
         return []
 
 def save_memory(history):
-    """Guarda el historial de conversacion en Notion"""
     if not NOTION_MEMORY_ID:
         return
     try:
-        # Borrar bloques existentes
         url = f"https://api.notion.com/v1/blocks/{NOTION_MEMORY_ID}/children"
         response = requests.get(url, headers=NOTION_HEADERS)
-        data = response.json()
-        for block in data.get("results", []):
+        for block in response.json().get("results", []):
             requests.delete(f"https://api.notion.com/v1/blocks/{block['id']}", headers=NOTION_HEADERS)
-
-        # Guardar solo los ultimos 20 mensajes
         recent = history[-20:]
-        content = json.dumps(recent, ensure_ascii=False)
-
-        # Crear nuevo bloque con el historial
         requests.patch(url, headers=NOTION_HEADERS, json={
             "children": [{
                 "object": "block",
                 "type": "code",
                 "code": {
-                    "rich_text": [{"type": "text", "text": {"content": content}}],
+                    "rich_text": [{"type": "text", "text": {"content": json.dumps(recent, ensure_ascii=False)}}],
                     "language": "json"
                 }
             }]
@@ -133,9 +122,7 @@ def mark_task_done(task_name):
         if task_name.lower() in task["name"].lower():
             url = f"https://api.notion.com/v1/pages/{task['id']}"
             requests.patch(url, headers=NOTION_HEADERS, json={
-                "properties": {
-                    "Status": {"status": {"name": "Done"}}
-                }
+                "properties": {"Status": {"status": {"name": "Done"}}}
             })
             return task["name"]
     return None
@@ -155,6 +142,30 @@ def create_task(name, priority="Media", due=None):
     })
     return response.status_code == 200
 
+def add_note_to_task(task_name, note):
+    """Agrega una nota con fecha al cuerpo de la tarea en Notion"""
+    all_tasks = get_all_tasks()
+    for task in all_tasks:
+        if task_name.lower() in task["name"].lower():
+            today = datetime.now().strftime("%Y-%m-%d %H:%M")
+            url = f"https://api.notion.com/v1/blocks/{task['id']}/children"
+            response = requests.patch(url, headers=NOTION_HEADERS, json={
+                "children": [
+                    {
+                        "object": "block",
+                        "type": "callout",
+                        "callout": {
+                            "rich_text": [{"type": "text", "text": {"content": f"📝 {today}\n{note}"}}],
+                            "icon": {"emoji": "📌"},
+                            "color": "gray_background"
+                        }
+                    }
+                ]
+            })
+            if response.status_code == 200:
+                return task["name"]
+    return None
+
 def ask_jade(user_message, tasks):
     history = load_memory()
 
@@ -166,7 +177,7 @@ def ask_jade(user_message, tasks):
     today = datetime.now().strftime("%Y-%m-%d")
 
     system = f"""Eres Jade, asistente personal de productividad de Vivian.
-Vivian es Territory Product Manager de NUC, Chromebox y Mini PC para Sudamerica.
+Vivian es Territory Product Manager de NUC, Chromebox y Mini PC para Sudamerica en Intel.
 Su region incluye: Colombia, Ecuador, Centroamerica, Chile, Peru y Argentina.
 Sus KPIs son revenue y unidades vendidas por trimestre (categorias: barebone y sistemas).
 Hoy es {today}.
@@ -175,11 +186,13 @@ Tareas actuales en Notion:
 {task_list}
 
 Eres conversacional, inteligente y concisa. Recuerdas conversaciones anteriores.
-Puedes ejecutar acciones incluyendo al final de tu respuesta:
-[ACCION: {{"tipo": "crear", "nombre": "...", "prioridad": "Alta|Media|Baja", "fecha": "YYYY-MM-DD o null"}}]
-[ACCION: {{"tipo": "done", "nombre": "parte del nombre"}}]
 
-Solo incluye ACCION si el usuario pide explicitamente crear o completar una tarea.
+Puedes ejecutar estas acciones incluyendolas AL FINAL de tu respuesta:
+[ACCION: {{"tipo": "crear", "nombre": "...", "prioridad": "Alta|Media|Baja", "fecha": "YYYY-MM-DD o null"}}]
+[ACCION: {{"tipo": "done", "nombre": "parte del nombre de la tarea"}}]
+[ACCION: {{"tipo": "nota", "tarea": "parte del nombre", "nota": "texto de la nota"}}]
+
+Solo incluye ACCION si el usuario pide explicitamente crear tarea, completar tarea o agregar nota.
 Responde siempre en español."""
 
     history.append({"role": "user", "content": user_message})
@@ -230,7 +243,7 @@ def webhook():
             return "ok"
 
         if text in ["/start", "/help"]:
-            send_message(chat_id, "Hola, soy *Jade*!\n\nSoy tu asistente personal. Habla conmigo naturalmente:\n- _que tengo pendiente?_\n- _agrega tarea: llamar a proveedor el viernes_\n- _ya termine el pipeline_\n- _que deberia priorizar esta semana?_")
+            send_message(chat_id, "Hola, soy *Jade*!\n\nHabla conmigo naturalmente:\n- _que tengo pendiente?_\n- _agrega tarea: llamar a proveedor el viernes_\n- _ya termine el pipeline_\n- _agrega nota al pipeline: bloqueado por presupuesto de Argentina_\n- _que deberia priorizar esta semana?_")
             return "ok"
 
         tasks = get_tasks()
@@ -247,12 +260,20 @@ def webhook():
                     response_text += f"\n\n✅ Cree *{action.get('nombre')}* en Notion."
                 else:
                     response_text += "\n\n❌ No pude crear la tarea en Notion."
+
             elif action.get("tipo") == "done":
                 completed = mark_task_done(action.get("nombre", ""))
                 if completed:
                     response_text += f"\n\n✅ Marque *{completed}* como Done en Notion."
                 else:
                     response_text += f"\n\n❌ No encontre la tarea en Notion."
+
+            elif action.get("tipo") == "nota":
+                saved = add_note_to_task(action.get("tarea", ""), action.get("nota", ""))
+                if saved:
+                    response_text += f"\n\n📝 Note agregada a *{saved}* en Notion."
+                else:
+                    response_text += f"\n\n❌ No encontre la tarea para agregar la nota."
 
         send_message(chat_id, response_text)
 
