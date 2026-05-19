@@ -2,6 +2,7 @@ import os
 import json
 import requests
 from flask import Flask, request
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -10,6 +11,7 @@ CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY")
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
 NOTION_DB_ID = os.environ.get("NOTION_DB_ID")
 ALLOWED_CHAT_ID = os.environ.get("ALLOWED_CHAT_ID")
+NOTION_MEMORY_ID = os.environ.get("NOTION_MEMORY_ID")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 NOTION_HEADERS = {
@@ -18,15 +20,61 @@ NOTION_HEADERS = {
     "Content-Type": "application/json"
 }
 
-# Memoria de conversacion en memoria (se resetea al reiniciar)
-conversation_history = []
-
 def send_message(chat_id, text):
     requests.post(f"{TELEGRAM_API}/sendMessage", json={
         "chat_id": chat_id,
         "text": text,
         "parse_mode": "Markdown"
     })
+
+def load_memory():
+    """Lee el historial de conversacion desde Notion"""
+    if not NOTION_MEMORY_ID:
+        return []
+    try:
+        url = f"https://api.notion.com/v1/blocks/{NOTION_MEMORY_ID}/children"
+        response = requests.get(url, headers=NOTION_HEADERS)
+        data = response.json()
+        blocks = data.get("results", [])
+        for block in blocks:
+            if block.get("type") == "code":
+                content = block["code"]["rich_text"]
+                if content:
+                    text = content[0]["plain_text"]
+                    return json.loads(text)
+        return []
+    except:
+        return []
+
+def save_memory(history):
+    """Guarda el historial de conversacion en Notion"""
+    if not NOTION_MEMORY_ID:
+        return
+    try:
+        # Borrar bloques existentes
+        url = f"https://api.notion.com/v1/blocks/{NOTION_MEMORY_ID}/children"
+        response = requests.get(url, headers=NOTION_HEADERS)
+        data = response.json()
+        for block in data.get("results", []):
+            requests.delete(f"https://api.notion.com/v1/blocks/{block['id']}", headers=NOTION_HEADERS)
+
+        # Guardar solo los ultimos 20 mensajes
+        recent = history[-20:]
+        content = json.dumps(recent, ensure_ascii=False)
+
+        # Crear nuevo bloque con el historial
+        requests.patch(url, headers=NOTION_HEADERS, json={
+            "children": [{
+                "object": "block",
+                "type": "code",
+                "code": {
+                    "rich_text": [{"type": "text", "text": {"content": content}}],
+                    "language": "json"
+                }
+            }]
+        })
+    except Exception as e:
+        print(f"Error guardando memoria: {e}")
 
 def get_tasks():
     url = f"https://api.notion.com/v1/databases/{NOTION_DB_ID}/query"
@@ -107,31 +155,34 @@ def create_task(name, priority="Media", due=None):
     })
     return response.status_code == 200
 
-def ask_claude_conversational(user_message, tasks):
-    global conversation_history
+def ask_jade(user_message, tasks):
+    history = load_memory()
 
     task_list = "\n".join([
         f"- {t['name']} | Estado: {t['status']} | Prioridad: {t['priority']} | Vence: {t['due'] or 'sin fecha'}"
         for t in tasks
     ]) if tasks else "No hay tareas pendientes."
 
-    system = f"""Eres Jade, asistente personal de productividad de Vivian. Eres conversacional, util y concisa.
+    today = datetime.now().strftime("%Y-%m-%d")
 
-Tienes acceso a las tareas actuales de Notion:
+    system = f"""Eres Jade, asistente personal de productividad de Vivian.
+Vivian es Territory Product Manager de NUC, Chromebox y Mini PC para Sudamerica.
+Su region incluye: Colombia, Ecuador, Centroamerica, Chile, Peru y Argentina.
+Sus KPIs son revenue y unidades vendidas por trimestre (categorias: barebone y sistemas).
+Hoy es {today}.
+
+Tareas actuales en Notion:
 {task_list}
 
-Puedes hacer estas acciones respondiendo con JSON al final de tu mensaje cuando sea necesario:
-- Crear tarea: [ACCION: {{"tipo": "crear", "nombre": "...", "prioridad": "Alta|Media|Baja", "fecha": "YYYY-MM-DD o null"}}]
-- Marcar como done: [ACCION: {{"tipo": "done", "nombre": "parte del nombre"}}]
+Eres conversacional, inteligente y concisa. Recuerdas conversaciones anteriores.
+Puedes ejecutar acciones incluyendo al final de tu respuesta:
+[ACCION: {{"tipo": "crear", "nombre": "...", "prioridad": "Alta|Media|Baja", "fecha": "YYYY-MM-DD o null"}}]
+[ACCION: {{"tipo": "done", "nombre": "parte del nombre"}}]
 
-Si no necesitas hacer ninguna accion, no incluyas el bloque ACCION.
-Responde siempre en español. Se breve y directa."""
+Solo incluye ACCION si el usuario pide explicitamente crear o completar una tarea.
+Responde siempre en español."""
 
-    conversation_history.append({"role": "user", "content": user_message})
-
-    # Mantener solo los ultimos 10 mensajes
-    if len(conversation_history) > 10:
-        conversation_history = conversation_history[-10:]
+    history.append({"role": "user", "content": user_message})
 
     response = requests.post(
         "https://api.anthropic.com/v1/messages",
@@ -144,7 +195,7 @@ Responde siempre en español. Se breve y directa."""
             "model": "claude-sonnet-4-5-20250929",
             "max_tokens": 1000,
             "system": system,
-            "messages": conversation_history
+            "messages": history
         }
     )
     data = response.json()
@@ -152,20 +203,18 @@ Responde siempre en español. Se breve y directa."""
         return "Hubo un error. Intenta de nuevo.", None
 
     full_response = data["content"][0]["text"]
-    conversation_history.append({"role": "assistant", "content": full_response})
+    history.append({"role": "assistant", "content": full_response})
+    save_memory(history)
 
-    # Extraer accion si existe
     action = None
+    clean_response = full_response
     if "[ACCION:" in full_response:
         try:
             action_str = full_response.split("[ACCION:")[1].split("]")[0].strip()
             action = json.loads(action_str)
-            # Limpiar el texto de la respuesta
             clean_response = full_response.split("[ACCION:")[0].strip()
         except:
-            clean_response = full_response
-    else:
-        clean_response = full_response
+            pass
 
     return clean_response, action
 
@@ -181,13 +230,12 @@ def webhook():
             return "ok"
 
         if text in ["/start", "/help"]:
-            send_message(chat_id, "Hola, soy *Jade*!\n\nPuedo ayudarte con tus tareas de Notion. Habla conmigo naturalmente, por ejemplo:\n- _que tengo pendiente hoy?_\n- _agrega una tarea para llamar al proveedor_\n- _ya termine la tarea del pipeline_\n- _que deberia priorizar esta semana?_")
+            send_message(chat_id, "Hola, soy *Jade*!\n\nSoy tu asistente personal. Habla conmigo naturalmente:\n- _que tengo pendiente?_\n- _agrega tarea: llamar a proveedor el viernes_\n- _ya termine el pipeline_\n- _que deberia priorizar esta semana?_")
             return "ok"
 
         tasks = get_tasks()
-        response_text, action = ask_claude_conversational(text, tasks)
+        response_text, action = ask_jade(text, tasks)
 
-        # Ejecutar accion si Claude la indico
         if action:
             if action.get("tipo") == "crear":
                 success = create_task(
@@ -196,16 +244,15 @@ def webhook():
                     due=action.get("fecha")
                 )
                 if success:
-                    response_text += f"\n\n✅ Cree la tarea *{action.get('nombre')}* en Notion."
+                    response_text += f"\n\n✅ Cree *{action.get('nombre')}* en Notion."
                 else:
                     response_text += "\n\n❌ No pude crear la tarea en Notion."
-
             elif action.get("tipo") == "done":
                 completed = mark_task_done(action.get("nombre", ""))
                 if completed:
                     response_text += f"\n\n✅ Marque *{completed}* como Done en Notion."
                 else:
-                    response_text += f"\n\n❌ No encontre la tarea '{action.get('nombre')}' en Notion."
+                    response_text += f"\n\n❌ No encontre la tarea en Notion."
 
         send_message(chat_id, response_text)
 
