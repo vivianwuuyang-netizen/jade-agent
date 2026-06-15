@@ -67,7 +67,6 @@ def save_memory(history):
         print(f"Error guardando memoria: {e}")
 
 def get_kpis():
-    """Lee los KPIs desde la pagina de Notion"""
     if not NOTION_KPIS_ID:
         return ""
     try:
@@ -78,25 +77,20 @@ def get_kpis():
         for block in data.get("results", []):
             block_type = block.get("type")
             if block_type == "table":
-                table_id = block["id"]
-                rows_url = f"https://api.notion.com/v1/blocks/{table_id}/children"
-                rows_response = requests.get(rows_url, headers=NOTION_HEADERS)
-                rows = rows_response.json().get("results", [])
+                rows_url = f"https://api.notion.com/v1/blocks/{block['id']}/children"
+                rows = requests.get(rows_url, headers=NOTION_HEADERS).json().get("results", [])
                 for row in rows:
                     cells = row.get("table_row", {}).get("cells", [])
-                    row_text = " | ".join([
-                        cell[0]["plain_text"] if cell else ""
-                        for cell in cells
-                    ])
+                    row_text = " | ".join([cell[0]["plain_text"] if cell else "" for cell in cells])
                     kpi_text.append(row_text)
             elif block_type in ["paragraph", "heading_1", "heading_2", "heading_3"]:
                 rich_text = block.get(block_type, {}).get("rich_text", [])
                 if rich_text:
                     kpi_text.append(rich_text[0].get("plain_text", ""))
-        return "\n".join(kpi_text) if kpi_text else "No se pudieron cargar los KPIs."
+        return "\n".join(kpi_text) if kpi_text else ""
     except Exception as e:
         print(f"Error leyendo KPIs: {e}")
-        return "No se pudieron cargar los KPIs."
+        return ""
 
 def get_tasks():
     url = f"https://api.notion.com/v1/databases/{NOTION_DB_ID}/query"
@@ -125,13 +119,7 @@ def get_tasks():
         if due_prop and due_prop.get("date") and due_prop["date"]:
             due = due_prop["date"].get("start", "")
         if name and status != "Done":
-            tasks.append({
-                "id": page["id"],
-                "name": name,
-                "status": status,
-                "priority": priority,
-                "due": due
-            })
+            tasks.append({"id": page["id"], "name": name, "status": status, "priority": priority, "due": due})
     return tasks
 
 def get_all_tasks():
@@ -150,18 +138,15 @@ def get_all_tasks():
     return tasks
 
 def mark_task_done(task_name):
-    all_tasks = get_all_tasks()
-    for task in all_tasks:
+    for task in get_all_tasks():
         if task_name.lower() in task["name"].lower():
-            url = f"https://api.notion.com/v1/pages/{task['id']}"
-            requests.patch(url, headers=NOTION_HEADERS, json={
+            requests.patch(f"https://api.notion.com/v1/pages/{task['id']}", headers=NOTION_HEADERS, json={
                 "properties": {"Status": {"status": {"name": "Done"}}}
             })
             return task["name"]
     return None
 
 def create_task(name, priority="Media", due=None):
-    url = "https://api.notion.com/v1/pages"
     properties = {
         "Tarea": {"title": [{"text": {"content": name}}]},
         "Prioridad": {"select": {"name": priority}},
@@ -169,19 +154,17 @@ def create_task(name, priority="Media", due=None):
     }
     if due:
         properties["Fecha límite"] = {"date": {"start": due}}
-    response = requests.post(url, headers=NOTION_HEADERS, json={
+    response = requests.post("https://api.notion.com/v1/pages", headers=NOTION_HEADERS, json={
         "parent": {"database_id": NOTION_DB_ID},
         "properties": properties
     })
     return response.status_code == 200
 
 def add_note_to_task(task_name, note):
-    all_tasks = get_all_tasks()
-    for task in all_tasks:
+    for task in get_all_tasks():
         if task_name.lower() in task["name"].lower():
             today = datetime.now().strftime("%Y-%m-%d %H:%M")
-            url = f"https://api.notion.com/v1/blocks/{task['id']}/children"
-            response = requests.patch(url, headers=NOTION_HEADERS, json={
+            response = requests.patch(f"https://api.notion.com/v1/blocks/{task['id']}/children", headers=NOTION_HEADERS, json={
                 "children": [{
                     "object": "block",
                     "type": "callout",
@@ -196,9 +179,67 @@ def add_note_to_task(task_name, note):
                 return task["name"]
     return None
 
+def get_tech_news():
+    """Busca noticias recientes sobre NUC, Chromebox y Mini PC usando web search de Claude"""
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    boletín_ejemplo = """🗞️ Noticiario Tech — Semana del [fecha]
+
+1. 🔍 [Titulo noticia]
+[Descripcion con impacto para el negocio]
+💡 Acción: [accion concreta para Vivian]
+
+2. 🤖 [Titulo noticia]
+...
+
+Resumen ejecutivo
+Tema | Qué pasó | Acción"""
+
+    prompt = f"""Hoy es {today}. Eres Jade, asistente de Vivian, Territory Product Manager de NUC, Chromebox y Mini PC para Sudamerica (Colombia, Ecuador, Centroamerica, Chile, Peru, Argentina).
+
+Busca en internet las noticias mas importantes de las ultimas 2 semanas relacionadas con:
+- Intel NUC y Mini PC
+- Chromebox y Chrome OS enterprise
+- IA en edge computing y dispositivos locales
+- Tendencias de hardware que afecten ventas en LATAM
+- Precios de componentes (RAM, almacenamiento)
+
+Genera un boletin informativo ejecutivo con este formato exacto:
+
+🗞️ Noticiario Tech — Semana del {today}
+
+[3-5 noticias numeradas, cada una con]:
+- Titulo con emoji relevante
+- Descripcion de 2-3 parrafos con contexto
+- Impacto especifico para los paises de Vivian (Colombia, Chile, Peru, Argentina, Ecuador, Centroamerica)
+- 💡 Accion: recomendacion concreta para Vivian
+
+Al final incluye un resumen ejecutivo en tabla con: Tema | Que paso | Accion
+
+Escribe en español, tono ejecutivo y directo como un analista de mercado."""
+
+    response = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": CLAUDE_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json"
+        },
+        json={
+            "model": "claude-sonnet-4-5-20250929",
+            "max_tokens": 4000,
+            "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+            "messages": [{"role": "user", "content": prompt}]
+        }
+    )
+    data = response.json()
+    if "content" not in data:
+        return "No pude obtener las noticias. Intenta de nuevo."
+    full_text = " ".join([block.get("text", "") for block in data["content"] if block.get("type") == "text"])
+    return full_text if full_text else "No pude generar el boletin. Intenta de nuevo."
+
 def ask_jade(user_message, tasks, kpis):
     history = load_memory()
-
     task_list = "\n".join([
         f"- {t['name']} | Estado: {t['status']} | Prioridad: {t['priority']} | Vence: {t['due'] or 'sin fecha'}"
         for t in tasks
@@ -210,18 +251,16 @@ def ask_jade(user_message, tasks, kpis):
     system = f"""Eres Jade, asistente personal de productividad de Vivian.
 Vivian es Territory Product Manager de NUC, Chromebox y Mini PC para Sudamerica en Intel.
 Su region incluye: Colombia, Ecuador, Centroamerica, Chile, Peru y Argentina.
-Sus KPIs se miden en revenue y unidades por trimestre en 3 categorias: MR/AR (Mini PC + NUC Barebone), MS/AS (Mini PC + NUC System) y GX10.
+Sus KPIs son revenue y unidades por trimestre en 3 categorias: MR/AR (Mini PC + NUC Barebone), MS/AS (Mini PC + NUC System) y GX10.
 Hoy es {today}. Mes actual: {current_month}.
 
-KPIs 2026 (metas anuales y avance mensual):
+KPIs 2026:
 {kpis}
 
 Tareas actuales en Notion:
 {task_list}
 
-Cuando Vivian te pregunte sobre prioridades, conecta sus tareas con sus KPIs. 
-Por ejemplo: si hay una orden grande de MR/AR pendiente y estamos cerca del cierre del trimestre, esa orden es critica para el KPI.
-
+Cuando Vivian pregunte sobre prioridades, conecta sus tareas con sus KPIs.
 Eres conversacional, inteligente y concisa. Recuerdas conversaciones anteriores.
 
 Puedes ejecutar acciones incluyendolas AL FINAL de tu respuesta:
@@ -233,7 +272,6 @@ Solo incluye ACCION si el usuario pide explicitamente crear tarea, completar tar
 Responde siempre en español."""
 
     history.append({"role": "user", "content": user_message})
-
     response = requests.post(
         "https://api.anthropic.com/v1/messages",
         headers={
@@ -280,7 +318,22 @@ def webhook():
             return "ok"
 
         if text in ["/start", "/help"]:
-            send_message(chat_id, "Hola, soy *Jade*!\n\nHabla conmigo naturalmente:\n- _que tengo pendiente?_\n- _agrega tarea: llamar a proveedor el viernes_\n- _ya termine el pipeline_\n- _agrega nota al pipeline: bloqueado por presupuesto_\n- _como voy con mis KPIs este trimestre?_")
+            send_message(chat_id, "Hola, soy *Jade*!\n\nHabla conmigo naturalmente:\n- _que tengo pendiente?_\n- _como voy con mis KPIs?_\n- _agrega tarea: llamar a proveedor_\n- _ya termine el pipeline_\n- _agrega nota al pipeline: bloqueado por presupuesto_\n- _dame las noticias tech de la semana_")
+            return "ok"
+
+        text_lower = text.lower()
+
+        # Detectar solicitud de noticias
+        if any(word in text_lower for word in ["noticia", "boletin", "boletín", "noticias", "novedades tech", "que paso en tech", "noticias tech"]):
+            send_message(chat_id, "🔍 Buscando las noticias tech más importantes de la semana...")
+            news = get_tech_news()
+            # Telegram tiene limite de 4096 caracteres por mensaje
+            if len(news) > 4000:
+                parts = [news[i:i+4000] for i in range(0, len(news), 4000)]
+                for part in parts:
+                    send_message(chat_id, part)
+            else:
+                send_message(chat_id, news)
             return "ok"
 
         tasks = get_tasks()
@@ -289,29 +342,14 @@ def webhook():
 
         if action:
             if action.get("tipo") == "crear":
-                success = create_task(
-                    name=action.get("nombre", ""),
-                    priority=action.get("prioridad", "Media"),
-                    due=action.get("fecha")
-                )
-                if success:
-                    response_text += f"\n\n✅ Cree *{action.get('nombre')}* en Notion."
-                else:
-                    response_text += "\n\n❌ No pude crear la tarea en Notion."
-
+                success = create_task(name=action.get("nombre", ""), priority=action.get("prioridad", "Media"), due=action.get("fecha"))
+                response_text += f"\n\n✅ Cree *{action.get('nombre')}* en Notion." if success else "\n\n❌ No pude crear la tarea."
             elif action.get("tipo") == "done":
                 completed = mark_task_done(action.get("nombre", ""))
-                if completed:
-                    response_text += f"\n\n✅ Marque *{completed}* como Done en Notion."
-                else:
-                    response_text += f"\n\n❌ No encontre la tarea en Notion."
-
+                response_text += f"\n\n✅ Marque *{completed}* como Done en Notion." if completed else "\n\n❌ No encontre la tarea."
             elif action.get("tipo") == "nota":
                 saved = add_note_to_task(action.get("tarea", ""), action.get("nota", ""))
-                if saved:
-                    response_text += f"\n\n📝 Nota agregada a *{saved}* en Notion."
-                else:
-                    response_text += f"\n\n❌ No encontre la tarea para agregar la nota."
+                response_text += f"\n\n📝 Nota agregada a *{saved}* en Notion." if saved else "\n\n❌ No encontre la tarea."
 
         send_message(chat_id, response_text)
 
