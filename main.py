@@ -1,6 +1,7 @@
 import os
 import json
 import requests
+import threading
 from flask import Flask, request
 from datetime import datetime
 
@@ -178,51 +179,67 @@ def add_note_to_task(task_name, note):
                 return task["name"]
     return None
 
-def get_tech_news():
-    today = datetime.now().strftime("%Y-%m-%d")
-    prompt = f"""Hoy es {today}. Eres Jade, asistente de Vivian, Territory Product Manager de Intel NUC, Chromebox y Mini PC para Sudamerica (Colombia, Ecuador, Centroamerica, Chile, Peru, Argentina).
+def generate_and_send_news(chat_id):
+    """Genera el boletin en un hilo separado y lo manda cuando este listo"""
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        prompt = f"""Hoy es {today}. Eres Jade, asistente de Vivian, Territory Product Manager de Intel NUC, Chromebox y Mini PC para Sudamerica (Colombia, Ecuador, Centroamerica, Chile, Peru, Argentina).
 
-Genera un boletin informativo ejecutivo sobre las noticias mas relevantes de las ultimas 2 semanas para su negocio. Incluye:
-- Novedades de Intel NUC y Mini PC
-- Chromebox y Chrome OS enterprise  
-- IA en edge computing y dispositivos locales
-- Tendencias de hardware que afecten ventas en LATAM
-- Precios de componentes si hay cambios relevantes
+Genera un boletin ejecutivo breve sobre novedades tech relevantes para su negocio. Incluye tendencias de:
+- Intel NUC y Mini PC
+- Chromebox enterprise
+- IA en dispositivos locales y edge computing
+- Hardware LATAM
 
-Formato exacto del boletin:
+Formato:
 
-🗞️ Noticiario Tech — Semana del {today}
+🗞️ *Noticiario Tech — {today}*
 
-[3-4 noticias con este formato cada una]:
-[numero]. [emoji] [Titulo]
-[2-3 parrafos de descripcion con impacto para LATAM]
-[Menciona paises especificos cuando sea relevante: Colombia, Chile, Peru, Argentina, Ecuador]
-💡 Accion: [recomendacion concreta para Vivian como TPM]
+1. [emoji] *[Titulo]*
+[2 parrafos de descripcion con impacto LATAM]
+💡 *Accion:* [recomendacion para Vivian]
+
+2. [emoji] *[Titulo]*
+[descripcion]
+💡 *Accion:* [recomendacion]
+
+3. [emoji] *[Titulo]*
+[descripcion]
+💡 *Accion:* [recomendacion]
 
 ---
-*Resumen ejecutivo*
-Tema | Que paso | Accion
+*Resumen:* [2 lineas con lo mas importante]
 
-Escribe en español, tono ejecutivo. Maximo 3500 caracteres total."""
+Maximo 2500 caracteres. Español, tono ejecutivo."""
 
-    response = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={
-            "x-api-key": CLAUDE_API_KEY,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json"
-        },
-        json={
-            "model": "claude-sonnet-4-5-20250929",
-            "max_tokens": 2000,
-            "messages": [{"role": "user", "content": prompt}]
-        }
-    )
-    data = response.json()
-    if "content" not in data:
-        print(f"Error noticias: {data}")
-        return "No pude generar el boletin. Intenta de nuevo."
-    return data["content"][0]["text"]
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": CLAUDE_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "claude-sonnet-4-5-20250929",
+                "max_tokens": 1500,
+                "messages": [{"role": "user", "content": prompt}]
+            },
+            timeout=120
+        )
+        data = response.json()
+        if "content" in data:
+            news = data["content"][0]["text"]
+            if len(news) > 4000:
+                parts = [news[i:i+4000] for i in range(0, len(news), 4000)]
+                for part in parts:
+                    send_message(chat_id, part)
+            else:
+                send_message(chat_id, news)
+        else:
+            send_message(chat_id, "No pude generar el boletin. Intenta de nuevo.")
+    except Exception as e:
+        print(f"Error generando noticias: {e}")
+        send_message(chat_id, "Hubo un error generando el boletin. Intenta de nuevo.")
 
 def ask_jade(user_message, tasks, kpis):
     history = load_memory()
@@ -232,13 +249,12 @@ def ask_jade(user_message, tasks, kpis):
     ]) if tasks else "No hay tareas pendientes."
 
     today = datetime.now().strftime("%Y-%m-%d")
-    current_month = datetime.now().strftime("%B")
 
     system = f"""Eres Jade, asistente personal de productividad de Vivian.
 Vivian es Territory Product Manager de NUC, Chromebox y Mini PC para Sudamerica en Intel.
 Su region incluye: Colombia, Ecuador, Centroamerica, Chile, Peru y Argentina.
 Sus KPIs son revenue y unidades por trimestre en 3 categorias: MR/AR (Mini PC + NUC Barebone), MS/AS (Mini PC + NUC System) y GX10.
-Hoy es {today}. Mes actual: {current_month}.
+Hoy es {today}.
 
 KPIs 2026:
 {kpis}
@@ -270,7 +286,8 @@ Responde siempre en español."""
             "max_tokens": 1000,
             "system": system,
             "messages": history
-        }
+        },
+        timeout=30
     )
     data = response.json()
     if "content" not in data:
@@ -304,20 +321,16 @@ def webhook():
             return "ok"
 
         if text in ["/start", "/help"]:
-            send_message(chat_id, "Hola, soy *Jade*!\n\nHabla conmigo naturalmente:\n- _que tengo pendiente?_\n- _como voy con mis KPIs?_\n- _agrega tarea: llamar a proveedor_\n- _ya termine el pipeline_\n- _agrega nota al pipeline: bloqueado_\n- _dame las noticias tech de la semana_")
+            send_message(chat_id, "Hola, soy *Jade*!\n\nHabla conmigo naturalmente:\n- _que tengo pendiente?_\n- _como voy con mis KPIs?_\n- _agrega tarea: llamar a proveedor_\n- _ya termine el pipeline_\n- _agrega nota al pipeline: bloqueado_\n- _dame las noticias tech_")
             return "ok"
 
         text_lower = text.lower()
 
-        if any(word in text_lower for word in ["noticia", "boletin", "boletín", "noticias tech", "novedades"]):
-            send_message(chat_id, "📰 Preparando tu boletin tech...")
-            news = get_tech_news()
-            if len(news) > 4000:
-                parts = [news[i:i+4000] for i in range(0, len(news), 4000)]
-                for part in parts:
-                    send_message(chat_id, part)
-            else:
-                send_message(chat_id, news)
+        if any(word in text_lower for word in ["noticia", "boletin", "boletín", "noticias tech", "novedades tech"]):
+            send_message(chat_id, "📰 Preparando tu boletin tech... te llega en unos segundos.")
+            thread = threading.Thread(target=generate_and_send_news, args=(chat_id,))
+            thread.daemon = True
+            thread.start()
             return "ok"
 
         tasks = get_tasks()
