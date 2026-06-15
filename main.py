@@ -88,8 +88,7 @@ def get_kpis():
                 if rich_text:
                     kpi_text.append(rich_text[0].get("plain_text", ""))
         return "\n".join(kpi_text) if kpi_text else ""
-    except Exception as e:
-        print(f"Error leyendo KPIs: {e}")
+    except:
         return ""
 
 def get_tasks():
@@ -180,43 +179,31 @@ def add_note_to_task(task_name, note):
     return None
 
 def get_tech_news():
-    """Busca noticias recientes sobre NUC, Chromebox y Mini PC usando web search de Claude"""
     today = datetime.now().strftime("%Y-%m-%d")
+    prompt = f"""Hoy es {today}. Eres Jade, asistente de Vivian, Territory Product Manager de Intel NUC, Chromebox y Mini PC para Sudamerica (Colombia, Ecuador, Centroamerica, Chile, Peru, Argentina).
 
-    boletín_ejemplo = """🗞️ Noticiario Tech — Semana del [fecha]
-
-1. 🔍 [Titulo noticia]
-[Descripcion con impacto para el negocio]
-💡 Acción: [accion concreta para Vivian]
-
-2. 🤖 [Titulo noticia]
-...
-
-Resumen ejecutivo
-Tema | Qué pasó | Acción"""
-
-    prompt = f"""Hoy es {today}. Eres Jade, asistente de Vivian, Territory Product Manager de NUC, Chromebox y Mini PC para Sudamerica (Colombia, Ecuador, Centroamerica, Chile, Peru, Argentina).
-
-Busca en internet las noticias mas importantes de las ultimas 2 semanas relacionadas con:
-- Intel NUC y Mini PC
-- Chromebox y Chrome OS enterprise
+Genera un boletin informativo ejecutivo sobre las noticias mas relevantes de las ultimas 2 semanas para su negocio. Incluye:
+- Novedades de Intel NUC y Mini PC
+- Chromebox y Chrome OS enterprise  
 - IA en edge computing y dispositivos locales
 - Tendencias de hardware que afecten ventas en LATAM
-- Precios de componentes (RAM, almacenamiento)
+- Precios de componentes si hay cambios relevantes
 
-Genera un boletin informativo ejecutivo con este formato exacto:
+Formato exacto del boletin:
 
 🗞️ Noticiario Tech — Semana del {today}
 
-[3-5 noticias numeradas, cada una con]:
-- Titulo con emoji relevante
-- Descripcion de 2-3 parrafos con contexto
-- Impacto especifico para los paises de Vivian (Colombia, Chile, Peru, Argentina, Ecuador, Centroamerica)
-- 💡 Accion: recomendacion concreta para Vivian
+[3-4 noticias con este formato cada una]:
+[numero]. [emoji] [Titulo]
+[2-3 parrafos de descripcion con impacto para LATAM]
+[Menciona paises especificos cuando sea relevante: Colombia, Chile, Peru, Argentina, Ecuador]
+💡 Accion: [recomendacion concreta para Vivian como TPM]
 
-Al final incluye un resumen ejecutivo en tabla con: Tema | Que paso | Accion
+---
+*Resumen ejecutivo*
+Tema | Que paso | Accion
 
-Escribe en español, tono ejecutivo y directo como un analista de mercado."""
+Escribe en español, tono ejecutivo. Maximo 3500 caracteres total."""
 
     response = requests.post(
         "https://api.anthropic.com/v1/messages",
@@ -227,16 +214,15 @@ Escribe en español, tono ejecutivo y directo como un analista de mercado."""
         },
         json={
             "model": "claude-sonnet-4-5-20250929",
-            "max_tokens": 4000,
-            "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+            "max_tokens": 2000,
             "messages": [{"role": "user", "content": prompt}]
         }
     )
     data = response.json()
     if "content" not in data:
-        return "No pude obtener las noticias. Intenta de nuevo."
-    full_text = " ".join([block.get("text", "") for block in data["content"] if block.get("type") == "text"])
-    return full_text if full_text else "No pude generar el boletin. Intenta de nuevo."
+        print(f"Error noticias: {data}")
+        return "No pude generar el boletin. Intenta de nuevo."
+    return data["content"][0]["text"]
 
 def ask_jade(user_message, tasks, kpis):
     history = load_memory()
@@ -318,16 +304,14 @@ def webhook():
             return "ok"
 
         if text in ["/start", "/help"]:
-            send_message(chat_id, "Hola, soy *Jade*!\n\nHabla conmigo naturalmente:\n- _que tengo pendiente?_\n- _como voy con mis KPIs?_\n- _agrega tarea: llamar a proveedor_\n- _ya termine el pipeline_\n- _agrega nota al pipeline: bloqueado por presupuesto_\n- _dame las noticias tech de la semana_")
+            send_message(chat_id, "Hola, soy *Jade*!\n\nHabla conmigo naturalmente:\n- _que tengo pendiente?_\n- _como voy con mis KPIs?_\n- _agrega tarea: llamar a proveedor_\n- _ya termine el pipeline_\n- _agrega nota al pipeline: bloqueado_\n- _dame las noticias tech de la semana_")
             return "ok"
 
         text_lower = text.lower()
 
-        # Detectar solicitud de noticias
-        if any(word in text_lower for word in ["noticia", "boletin", "boletín", "noticias", "novedades tech", "que paso en tech", "noticias tech"]):
-            send_message(chat_id, "🔍 Buscando las noticias tech más importantes de la semana...")
+        if any(word in text_lower for word in ["noticia", "boletin", "boletín", "noticias tech", "novedades"]):
+            send_message(chat_id, "📰 Preparando tu boletin tech...")
             news = get_tech_news()
-            # Telegram tiene limite de 4096 caracteres por mensaje
             if len(news) > 4000:
                 parts = [news[i:i+4000] for i in range(0, len(news), 4000)]
                 for part in parts:
